@@ -28,16 +28,20 @@ export function appDbConfig() {
   const password = process.env.DB_APP_PASSWORD || process.env.DB_MARIA_PASSWORD
   const port = Number(process.env.DB_APP_PORT || process.env.DB_MARIA_PORT) || 3306
 
-  // Sem DB_APP_USER, a aplicação ESCREVE com a conta de LEITURA do ETL — que
-  // alcança as bases do ERP. A fronteira entre ler e escrever passa a existir
-  // só no comentário do código, e um bug de SQL aqui chega no ELLEVEN.
-  // server/migrations/PROVISIONAR-USUARIO.sql cria a conta certa.
+  // Sem DB_APP_USER, a aplicação escreve com a conta do ETL. Conferido no
+  // servidor em 12/11/2026: ela tem ALL PRIVILEGES em 22 bases da casa
+  // (DB_DevTasks, DB_Marketing, DB_Cancellation_Plataform, DB_Applicattion…).
+  // Não alcança o ERP — o ELLEVEN é PostgreSQL, por outro pool (scripts/db.mjs)
+  // —, mas alcança os bancos de todos os outros sistemas internos: um DELETE
+  // sem WHERE daqui não para em DB_HealthScore.
+  // `npm run provisionar:usuario` cria a conta restrita a esta base.
   if (!process.env.DB_APP_USER && user && !avisouFallback) {
     avisouFallback = true
     console.warn(
       `[banco] DB_APP_USER não definido — escrevendo em ${APP_DATABASE} com a conta do ETL ` +
-      `("${user}"), que tem acesso às bases do ERP. Provisione a conta dedicada ` +
-      '(server/migrations/PROVISIONAR-USUARIO.sql) e defina DB_APP_USER/DB_APP_PASSWORD na stack.',
+      `("${user}"), que tem ALL PRIVILEGES nas demais bases de aplicação da casa. ` +
+      'Provisione a conta dedicada (npm run provisionar:usuario) e defina ' +
+      'DB_APP_USER/DB_APP_PASSWORD na stack.',
     )
   }
   if (!host || !user) {

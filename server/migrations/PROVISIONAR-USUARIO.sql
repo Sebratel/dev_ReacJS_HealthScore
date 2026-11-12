@@ -9,14 +9,21 @@
 -- POR QUE EXISTE
 --
 -- `server/db.mjs` deixa DB_APP_USER cair em DB_MARIA_USER quando ausente,
--- porque é o mesmo servidor e só muda a base. A conveniência tem um preço: a
--- conta do ETL é de LEITURA sobre bases de terceiros, e se ela também for a
--- conta de escrita da aplicação, a fronteira entre "o que o sistema lê" e "o
--- que o sistema escreve" existe só no comentário do código.
+-- porque é o mesmo servidor e só muda a base. A conveniência tem um preço.
 --
--- Com um usuário próprio, o banco passa a garantir o que hoje é promessa:
--- `hs_app` NÃO ALCANÇA nenhuma base do ERP, e a conta do ETL não escreve em
--- lugar nenhum. Um bug de SQL na aplicação não tem como tocar o ELLEVEN.
+-- Conferido no servidor em 12/11/2026, `DevSebratel` (a conta do .env) tem
+-- ALL PRIVILEGES em 22 bases da casa — DB_DevTasks, DB_Marketing,
+-- DB_Cancellation_Plataform, DB_ComercialDashboard, DB_Applicattion e outras.
+-- Ela NÃO alcança o ERP (o ELLEVEN é PostgreSQL, por outro pool), mas alcança
+-- o banco de praticamente todo sistema interno. Um `delete` sem `where`
+-- escrito no Health Score não para em DB_HealthScore.
+--
+-- Com um usuário próprio, o banco passa a garantir o que hoje é disciplina:
+-- `hs_app` não tem como tocar em nada fora desta base.
+--
+-- ATENÇÃO: este script precisa de uma conta com CREATE USER. `DevSebratel`
+-- NÃO tem (`ERROR 1227`), então o DBA precisa rodar — ou conceder o
+-- privilégio.
 --
 -- COMO RODAR
 --

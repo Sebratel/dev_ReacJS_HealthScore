@@ -72,7 +72,26 @@ try {
   )
   console.log(`  ✓ base ${BASE} existe`)
 
-  await conn.query(`create user if not exists '${USUARIO}'@'%' identified by ${senhaSql}`)
+  try {
+    await conn.query(`create user if not exists '${USUARIO}'@'%' identified by ${senhaSql}`)
+  } catch (e) {
+    // Conferido em 12/11/2026: `DevSebratel` tem ALL PRIVILEGES em 22 bases
+    // nomeadas, mas nenhum privilégio global além de PROCESS — então criar
+    // usuário é recusado aqui. O erro cru ("Access denied; you need ... the
+    // CREATE USER privilege") não diz o que fazer; este diz.
+    if (e?.errno === 1227) {
+      throw new Error(
+        `A conta "${master.user}" não pode criar usuários neste servidor.\n` +
+        '  Ela tem ALL PRIVILEGES nas bases de aplicação, mas não CREATE USER (privilégio global).\n' +
+        '  Peça ao DBA para rodar, no 10.0.11.171:\n\n' +
+        `    create user '${USUARIO}'@'%' identified by '<senha>';\n` +
+        `    grant select, insert, update, delete on \`${BASE}\`.* to '${USUARIO}'@'%';\n` +
+        '    flush privileges;\n\n' +
+        `  Ou conceder: grant create user on *.* to '${master.user}'@'%';`,
+      )
+    }
+    throw e
+  }
   // `create user if not exists` NÃO troca a senha de uma conta que já existe.
   // Rodar de novo com senha nova precisa ser explícito, ou o script mentiria
   // dizendo "pronto" e a stack não conectaria.
