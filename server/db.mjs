@@ -20,11 +20,26 @@ export const APP_DATABASE = process.env.DB_APP_DATABASE || 'DB_HealthScore'
 
 // Credenciais do servidor MariaDB. As DB_MARIA_* são o fallback porque é o
 // mesmo servidor — só muda a base.
+let avisouFallback = false
+
 export function appDbConfig() {
   const host = process.env.DB_APP_HOST || process.env.DB_MARIA_HOST
   const user = process.env.DB_APP_USER || process.env.DB_MARIA_USER
   const password = process.env.DB_APP_PASSWORD || process.env.DB_MARIA_PASSWORD
   const port = Number(process.env.DB_APP_PORT || process.env.DB_MARIA_PORT) || 3306
+
+  // Sem DB_APP_USER, a aplicação ESCREVE com a conta de LEITURA do ETL — que
+  // alcança as bases do ERP. A fronteira entre ler e escrever passa a existir
+  // só no comentário do código, e um bug de SQL aqui chega no ELLEVEN.
+  // server/migrations/PROVISIONAR-USUARIO.sql cria a conta certa.
+  if (!process.env.DB_APP_USER && user && !avisouFallback) {
+    avisouFallback = true
+    console.warn(
+      `[banco] DB_APP_USER não definido — escrevendo em ${APP_DATABASE} com a conta do ETL ` +
+      `("${user}"), que tem acesso às bases do ERP. Provisione a conta dedicada ` +
+      '(server/migrations/PROVISIONAR-USUARIO.sql) e defina DB_APP_USER/DB_APP_PASSWORD na stack.',
+    )
+  }
   if (!host || !user) {
     throw new Error(
       'Banco da aplicação não configurado. Defina DB_APP_HOST/USER/PASSWORD ' +

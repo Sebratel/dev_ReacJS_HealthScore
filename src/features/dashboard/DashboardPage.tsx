@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Activity, AlertTriangle, DollarSign, Users, Gauge as GaugeIcon, ChevronRight, Brain, Loader2, Lock, RefreshCw, ListFilter } from 'lucide-react'
+import { Activity, AlertTriangle, DollarSign, Users, Gauge as GaugeIcon, ChevronRight, Brain, Loader2, Lock, RefreshCw, ListFilter, ClipboardCheck, Eye, EyeOff } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import { KpiCard } from '@/components/ui/KpiCard'
 import { MonthlyCohortCard } from './MonthlyCohortCard'
@@ -66,7 +66,25 @@ function RiskRow({ c, rank }: { c: RiskItem; rank: number }) {
           </p>
         </div>
         <div className="hidden sm:flex flex-col items-center"><span className="text-[9px] text-on-surface-variant/90">{c.enginesPresent} módulos</span></div>
-        <div className="flex flex-col items-end"><span style={{ color }} className="text-sm font-bold tabular-nums leading-none">{c.overallHealth}</span><span className="text-[9px] text-on-surface-variant/90">health</span></div>
+        {c.emPlano && (
+          <span className="hidden md:inline text-[9px] font-semibold px-1.5 py-0.5 rounded bg-primary/10 text-primary-strong shrink-0" title="Tem plano de ação em andamento">
+            em plano
+          </span>
+        )}
+        {/* O crédito aparece AO LADO do score medido, nunca somado dentro
+            dele. Quem lê a tela vê de onde veio cada ponto — e vê o crédito
+            sumir sozinho quando vence, se o score medido não tiver subido. */}
+        <div className="flex flex-col items-end">
+          <span className="flex items-baseline gap-1 leading-none">
+            <span style={{ color }} className="text-sm font-bold tabular-nums">{c.overallHealth}</span>
+            {c.creditoPlano > 0 && (
+              <span className="text-[10px] font-semibold text-primary tabular-nums" title={`+${c.creditoPlano} de crédito de plano, por prazo determinado — não entra no score medido`}>
+                +{c.creditoPlano}
+              </span>
+            )}
+          </span>
+          <span className="text-[9px] text-on-surface-variant/90">{c.creditoPlano > 0 ? 'health medido' : 'health'}</span>
+        </div>
         <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded" style={{ color, background: `${color}15` }}>{HEALTH_LABELS[c.classification]}</span>
       </div>
       {open && (
@@ -108,17 +126,23 @@ export default function DashboardPage() {
   }, [filters.contract, filters.name])
   const hasFilter = !!(debounced.contract || debounced.name || filters.city)
 
+  // Esconde da LISTA quem já está em plano de ação — ligado por padrão, para
+  // a operação não repetir quem está sendo tratado. Não mexe em KPI nenhum:
+  // os contadores acima seguem sobre a base inteira, e o rodapé da lista diz
+  // quantos ficaram de fora. Ver server/planoFiltro.test.mjs.
+  const [ocultarEmPlano, setOcultarEmPlano] = useState(true)
+
   useEffect(() => {
     let alive = true
     setLoading(true)
     const configs = { financial: financialConfig, commercial: commercialConfig, connection: connectionConfig, network: networkConfig, field: fieldConfig, installation: installationConfig, relationship: relationshipConfig }
     // Ao filtrar, sobe o topN para trazer todos os resultados do filtro (não só o top 8).
-    fetchDashboard({ configs, thresholds, name: debounced.name, contract: debounced.contract, city: filters.city, topN: hasFilter ? 50 : 8 })
+    fetchDashboard({ configs, thresholds, name: debounced.name, contract: debounced.contract, city: filters.city, topN: hasFilter ? 50 : 8, ocultarEmPlano })
       .then((d) => { if (alive) { setData(d); setError(null) } })
       .catch((e) => { if (alive) setError(e instanceof ApiError ? e : new ApiError(0, 'Erro inesperado.')) })
       .finally(() => { if (alive) setLoading(false) })
     return () => { alive = false }
-  }, [financialConfig, commercialConfig, connectionConfig, networkConfig, fieldConfig, installationConfig, relationshipConfig, thresholds, reloadKey, debounced, filters.city, hasFilter])
+  }, [financialConfig, commercialConfig, connectionConfig, networkConfig, fieldConfig, installationConfig, relationshipConfig, thresholds, reloadKey, debounced, filters.city, hasFilter, ocultarEmPlano])
 
   const compData = useMemo(
     () => (data ? data.summaries.map((e) => ({ name: e.label, score: e.avgHealthScore })).sort((a, b) => a.score - b.score) : []),
@@ -160,6 +184,35 @@ export default function DashboardPage() {
         resultCount={data?.ranking.visibleTotal}
         totalCount={data?.ranking.total}
       />
+      {/* Quem está em plano de ação.
+          A barra aparece SEMPRE que existe alguém em plano, inclusive com o
+          filtro desligado: o número precisa estar à vista para que esconder
+          nunca vire maquiar. Os KPIs abaixo seguem sobre a base inteira. */}
+      {data && data.planos?.disponivel && data.ranking.emPlanoCount > 0 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-outline bg-surface-container-lowest px-3 py-2 -mb-2">
+          <ClipboardCheck size={13} className="text-primary-strong shrink-0" />
+          <p className="text-[11px] text-on-surface-variant flex-1 min-w-[16rem]">
+            <span className="font-mono font-semibold text-on-surface">
+              {data.ranking.emPlanoCount.toLocaleString('pt-BR')}
+            </span>{' '}
+            contrato(s) em plano de ação
+            {data.ranking.criticalEmPlanoCount > 0 && (
+              <> · <span className="font-mono text-risk-critical">{data.ranking.criticalEmPlanoCount}</span> deles críticos</>
+            )}
+            {ocultarEmPlano
+              ? <> — ocultos da lista abaixo, <span className="font-semibold">mas contados nos indicadores</span>.</>
+              : <> — aparecendo na lista abaixo.</>}
+          </p>
+          <button
+            type="button"
+            onClick={() => setOcultarEmPlano((v) => !v)}
+            className="flex items-center gap-1.5 text-[11px] font-semibold text-primary hover:text-primary-strong transition-colors shrink-0"
+          >
+            {ocultarEmPlano ? <Eye size={12} /> : <EyeOff size={12} />}
+            {ocultarEmPlano ? 'Mostrar na lista' : 'Ocultar da lista'}
+          </button>
+        </div>
+      )}
       {loading && <div className="flex items-center justify-end gap-1.5 text-[11px] text-on-surface-variant -mb-3"><Loader2 size={11} className="animate-spin" /> atualizando…</div>}
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
