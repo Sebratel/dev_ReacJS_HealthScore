@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ClipboardList, Plus, Loader2, AlertTriangle, RefreshCw, Info, Database,
-  ShieldCheck, FlaskConical, ChevronLeft,
+  ShieldCheck, FlaskConical, ChevronLeft, Target, X,
 } from 'lucide-react'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { KpiCard } from '@/components/ui/KpiCard'
@@ -12,6 +12,7 @@ import {
   type ModuleStatus, type Run, type Recommendation,
 } from './actionPlansApi'
 import { NewRunDialog } from './NewRunDialog'
+import { NewPlanDialog } from './NewPlanDialog'
 import { RecommendationRow } from './RecommendationRow'
 import { TasksPanel } from './TasksPanel'
 
@@ -41,6 +42,8 @@ export default function ActionPlansPage() {
   const [recs, setRecs] = useState<Recommendation[] | null>(null)
   const [recsErro, setRecsErro] = useState<string | null>(null)
   const [dialogo, setDialogo] = useState(false)
+  const [dialogoPlano, setDialogoPlano] = useState(false)
+  const [planoCriado, setPlanoCriado] = useState<{ entraram: number } | null>(null)
 
   const carregarStatus = useCallback(() => {
     setStatusErro(null)
@@ -106,12 +109,24 @@ export default function ActionPlansPage() {
             </div>
           </div>
           {podeDecidir && !bancoIndisponivel && (
-            <button
-              onClick={() => setDialogo(true)}
-              className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 transition-all font-medium"
-            >
-              <Plus size={12} /> Nova rodada
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Dois caminhos, de propósito. "Novo plano" é o de massa: uma
+                  régua pega centenas ou milhares de contratos de uma vez.
+                  "Rodada de IA" gera recomendação por contrato e custa uma
+                  chamada paga em cada um — por isso tem teto de 200. */}
+              <button
+                onClick={() => setDialogoPlano(true)}
+                className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 transition-all font-medium"
+              >
+                <Target size={12} /> Novo plano
+              </button>
+              <button
+                onClick={() => setDialogo(true)}
+                className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg border border-outline text-on-surface/80 hover:border-outline-strong transition-colors"
+              >
+                <Plus size={12} /> Rodada de IA
+              </button>
+            </div>
           )}
         </div>
 
@@ -317,6 +332,34 @@ export default function ActionPlansPage() {
             </div>
           )}
         </Card>
+      )}
+
+      {/* Confirmação do plano criado. Diz quantos contratos saíram da lista
+          E que os indicadores não se mexeram — é a dúvida que aparece na
+          primeira vez que alguém vê centenas de contratos sumirem de uma vez. */}
+      {planoCriado && (
+        <div className="flex items-start gap-2 rounded-xl border border-primary/25 bg-primary/5 px-4 py-3">
+          <Target size={14} className="text-primary-strong mt-0.5 shrink-0" />
+          <p className="text-[11px] text-on-surface-variant leading-relaxed flex-1">
+            Plano criado com <strong className="text-on-surface font-mono">{planoCriado.entraram.toLocaleString('pt-BR')}</strong> contrato(s).
+            Eles saíram das listas operacionais enquanto o plano corre — e <strong>continuam contados</strong> em
+            críticos, receita em risco e na coorte mensal.
+          </p>
+          <button onClick={() => setPlanoCriado(null)} className="text-on-surface-variant hover:text-on-surface transition-colors shrink-0" aria-label="Fechar">
+            <X size={13} />
+          </button>
+        </div>
+      )}
+
+      {dialogoPlano && (
+        <NewPlanDialog
+          onClose={() => setDialogoPlano(false)}
+          onCriado={(_runId, entraram) => {
+            setDialogoPlano(false)
+            setPlanoCriado({ entraram })
+            carregarRuns()
+          }}
+        />
       )}
 
       {dialogo && status && (

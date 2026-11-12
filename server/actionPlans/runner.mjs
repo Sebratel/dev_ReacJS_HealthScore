@@ -9,6 +9,7 @@
 import { runEngine, scoreEngineAllClients } from '../engines.mjs'
 import { getClients, getDataset } from '../dataset.mjs'
 import { getOfficialConfig } from '../officialConfig.mjs'
+import { withDefaults } from '../engineDefaults.mjs'
 import { provedorAtivo } from '../ia/registro.mjs'
 import { buildDossier, renderPrompt } from './dossier.mjs'
 import { validateRecommendation, contratoEmTexto, ACTION_PLAN_JSON_SCHEMA } from './schema.mjs'
@@ -57,7 +58,13 @@ export function selectClients(criterio = {}) {
   if (!clients.length) throw new Error('Base ainda não materializada no backend (snapshot ausente).')
 
   const official = getOfficialConfig()
-  const config = official?.configs?.financial
+  // withDefaults, NUNCA a config crua. A gravada traz as NOTAS; a FORMA dos
+  // indicadores (quais faixas existem) vem do codigo. Uma config publicada
+  // antes de um indicador virar faixa nao tem `indices`: sem o merge, ela
+  // pontua zero, todo mundo fica com 100, e a selecao devolve NINGUEM — em
+  // silencio, enquanto a tela de /financeiro (que aplica o merge) continua
+  // mostrando os criticos. As duas precisam ler a mesma regua.
+  const config = withDefaults(official?.configs)?.financial
   if (!config) {
     throw new Error(
       'Config oficial do Financeiro não publicada. Um power user precisa publicar os pesos ' +
@@ -110,7 +117,9 @@ export function selecionarPorRegua(setor, definicao = {}, emPlano = null) {
   if (!clients.length) throw new Error('Base ainda não materializada no backend (snapshot ausente).')
 
   const official = getOfficialConfig()
-  const config = official?.configs?.[setor]
+  // Idem: a forma vem do codigo, as notas do que foi publicado. Ver o
+  // comentario em selectClients.
+  const config = withDefaults(official?.configs)?.[setor]
   if (!config) {
     throw new Error(
       `Config oficial de "${setor}" não publicada. Um power user precisa publicar os pesos em ` +

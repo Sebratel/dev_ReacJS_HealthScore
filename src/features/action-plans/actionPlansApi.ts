@@ -181,3 +181,115 @@ export const updateTask = (id: number, patch: { status?: TaskStatus; responsavel
 
 export const runOutcomeEvaluation = () =>
   call<{ avaliadas: number; semDados: number; total: number }>('/api/action-plans/outcomes/run', json({}))
+
+// ─── Régua, permanência e crédito ──────────────────────────────
+// Separado das rodadas de IA de propósito: ali cada contrato custa uma
+// chamada paga ao provedor (teto de 200); aqui a régua é o mecanismo de
+// MASSA — centenas ou milhares de contratos num plano só.
+
+export type Desfecho = 'com_exito' | 'sem_exito' | 'cancelado'
+
+export interface ReguaDefinicao {
+  classificacaoMinima?: string | null
+  scoreMin?: number | null
+  scoreMax?: number | null
+  cidade?: string | null
+  mrrMin?: number | null
+  mrrMax?: number | null
+  indicador?: { key: string; pontosMin?: number | null; pontosMax?: number | null } | null
+  quantidade?: number | null
+}
+
+export interface ReguaPreview {
+  setor: string
+  /** AMOSTRA (até 50). A contagem real está em `amostraDe`. */
+  selecionados: { contratoId: string; nome: string; cidade: string; mrr: number; score: number; classificacao: string }[]
+  amostraDe: number
+  truncado: boolean
+  /** Quantos casaram com a régua, incluindo os que já estão em plano. */
+  casaram: number
+  /** Desses, quantos já têm plano aberto no setor — não entram de novo. */
+  jaEmPlano: number
+  disponiveis: number
+}
+
+export interface Regua {
+  id: number
+  setor: string
+  nome: string
+  descricao: string | null
+  definicao: ReguaDefinicao
+  sugerida: boolean
+  criadoPor: string
+  criadoEm: string
+}
+
+export interface SetorSettings {
+  setor: string
+  creditoMaximo: number
+  validadeDias: number
+  definidoPor: string | null
+  definidoEm: string | null
+  padrao: boolean
+}
+
+export interface Permanencia {
+  id: number
+  runId: number
+  plano: string
+  contratoId: string
+  setor: string
+  scoreEntrada: number | null
+  classificacaoEntrada: string | null
+  scoreSaida: number | null
+  entrouEm: string
+  saiuEm: string | null
+  desfecho: Desfecho | null
+  observacao: string | null
+  creditoPrevisto: number
+  aberta: boolean
+}
+
+export const previewRegua = (setor: string, definicao: ReguaDefinicao) =>
+  call<ReguaPreview>('/api/action-plans/rulers/preview', json({ setor, definicao }))
+
+export const criarPlano = (body: {
+  setor: string; nome: string; definicao: ReguaDefinicao
+  creditoPontos?: number | null; rulerId?: number | null
+}) =>
+  call<{ runId: number; nome: string; entraram: number; jaEmPlano: number; casaram: number; creditoPontos: number; validadeDias: number }>(
+    '/api/action-plans/plans', json(body))
+
+export const listarReguas = (setor?: string) =>
+  call<{ reguas: Regua[] }>(`/api/action-plans/rulers${setor ? `?setor=${encodeURIComponent(setor)}` : ''}`)
+
+export const criarRegua = (body: { setor: string; nome: string; descricao?: string; definicao: ReguaDefinicao }) =>
+  call<{ id: number }>('/api/action-plans/rulers', json(body))
+
+export const arquivarRegua = (id: number) =>
+  call<{ id: number }>(`/api/action-plans/rulers/${id}`, { method: 'DELETE' })
+
+export const listarSettings = () =>
+  call<{ setores: SetorSettings[] }>('/api/action-plans/settings')
+
+export const salvarSettings = (setor: string, body: { creditoMaximo?: number; validadeDias?: number }) =>
+  call<{ setor: string; creditoMaximo: number; validadeDias: number }>(
+    `/api/action-plans/settings/${setor}`,
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+
+export const listarPermanencias = (params: { runId?: number; contrato?: string; abertas?: boolean } = {}) => {
+  const q = new URLSearchParams()
+  if (params.runId) q.set('runId', String(params.runId))
+  if (params.contrato) q.set('contrato', params.contrato)
+  if (params.abertas) q.set('abertas', '1')
+  const s = q.toString()
+  return call<{ permanencias: Permanencia[] }>(`/api/action-plans/memberships${s ? `?${s}` : ''}`)
+}
+
+export const encerrarPermanencia = (id: number, body: { desfecho: Desfecho; scoreSaida?: number | null; observacao?: string }) =>
+  call<{ membershipId: number; desfecho: Desfecho; credito: { pontos: number; validadeDias: number } | null }>(
+    `/api/action-plans/memberships/${id}/encerrar`, json(body))
+
+export const encerrarPlano = (runId: number, body: { desfecho: Desfecho; observacao?: string }) =>
+  call<{ runId: number; encerradas: number; comCredito: number }>(
+    `/api/action-plans/plans/${runId}/encerrar`, json(body))

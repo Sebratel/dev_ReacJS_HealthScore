@@ -14,6 +14,7 @@
 import { scoreEngineAllClients } from '../engines.mjs'
 import { getClients, getDataset } from '../dataset.mjs'
 import { getOfficialConfig } from '../officialConfig.mjs'
+import { withDefaults } from '../engineDefaults.mjs'
 import { listTasksDueForOutcome, insertOutcome } from './store.mjs'
 
 export const DEFAULT_PRAZO_DIAS = 30
@@ -35,7 +36,12 @@ export async function runOutcomeEvaluation({ prazoDias = DEFAULT_PRAZO_DIAS } = 
   if (!clients.length) throw new Error('Base ainda não materializada — sem snapshot não há score "depois".')
 
   const official = getOfficialConfig()
-  const config = official?.configs?.financial
+  // withDefaults, nunca a config crua — e aqui o estrago seria o pior dos
+  // tres lugares onde isso aparecia. Sem o merge, uma config publicada antes
+  // de um indicador virar faixa pontua zero: todo contrato sai com 100 no
+  // "depois", e TODO plano parece ter dado certo. A medicao de efetividade
+  // mentiria exatamente na direcao que agrada. Ver server/configOficial.test.mjs.
+  const config = withDefaults(official?.configs)?.financial
   if (!config) throw new Error('Config oficial do Financeiro não publicada — sem ela não há régua para o "depois".')
 
   const scores = scoreEngineAllClients('financial', {
