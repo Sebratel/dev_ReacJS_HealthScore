@@ -20,7 +20,17 @@
 --
 -- COMO RODAR
 --
---   mysql -h <host> -u root -p < server/migrations/PROVISIONAR-USUARIO.sql
+-- O caminho mais curto NÃO é este arquivo — é o script, que faz o mesmo
+-- usando o driver que o projeto já tem (sem precisar de cliente MariaDB
+-- instalado) e ainda CONFERE o isolamento no fim:
+--
+--   npm run provisionar:usuario -- --senha 'SENHA_NOVA'
+--
+-- Este .sql fica como referência de exatamente o que é executado, e para
+-- quem preferir rodar por um cliente gráfico (DBeaver, HeidiSQL) ou pelo
+-- terminal do servidor:
+--
+--   mysql -h <host> -u <master> -p < server/migrations/PROVISIONAR-USUARIO.sql
 --
 -- Troque a senha abaixo ANTES de rodar e guarde-a em DB_APP_PASSWORD na
 -- stack. Depois disto, `npm run migrate` aplica o esquema com esta conta.

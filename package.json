@@ -13,6 +13,7 @@
     "check:queries": "node scripts/queries/check-parity.mjs",
     "migrate": "node scripts/migrate.mjs",
     "migrate:status": "node scripts/migrate.mjs --status",
+    "provisionar:usuario": "node scripts/provisionar-app-user.mjs",
     "outcomes": "node --import tsx scripts/evaluate-outcomes.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
