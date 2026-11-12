@@ -10,44 +10,41 @@
 // propósito. O ETL é somente-leitura sobre bases de terceiros; este escreve, e
 // só na base da aplicação. Misturar os dois apagaria essa fronteira.
 //
-//   DB_APP_HOST/PORT/USER/PASSWORD  caem nas DB_MARIA_* quando ausentes
-//   DB_APP_DATABASE                 default: DB_HealthScore
+//   DB_APP_HOST/PORT   caem nas DB_MARIA_* quando ausentes (mesmo servidor)
+//   DB_APP_USER/PASSWORD  OBRIGATÓRIAS — ver abaixo
+//   DB_APP_DATABASE    default: DB_HealthScore
 // ─────────────────────────────────────────────────────────────────────────
 import 'dotenv/config'
 import mysql from 'mysql2/promise'
 
 export const APP_DATABASE = process.env.DB_APP_DATABASE || 'DB_HealthScore'
 
-// Credenciais do servidor MariaDB. As DB_MARIA_* são o fallback porque é o
-// mesmo servidor — só muda a base.
-let avisouFallback = false
-
 export function appDbConfig() {
+  // Host e porta ainda caem nas DB_MARIA_*: é o mesmo servidor, só muda a base.
   const host = process.env.DB_APP_HOST || process.env.DB_MARIA_HOST
-  const user = process.env.DB_APP_USER || process.env.DB_MARIA_USER
-  const password = process.env.DB_APP_PASSWORD || process.env.DB_MARIA_PASSWORD
   const port = Number(process.env.DB_APP_PORT || process.env.DB_MARIA_PORT) || 3306
+  const user = process.env.DB_APP_USER
+  const password = process.env.DB_APP_PASSWORD
 
-  // Sem DB_APP_USER, a aplicação escreve com a conta do ETL. Conferido no
-  // servidor em 12/11/2026: ela tem ALL PRIVILEGES em 22 bases da casa
-  // (DB_DevTasks, DB_Marketing, DB_Cancellation_Plataform, DB_Applicattion…).
-  // Não alcança o ERP — o ELLEVEN é PostgreSQL, por outro pool (scripts/db.mjs)
-  // —, mas alcança os bancos de todos os outros sistemas internos: um DELETE
-  // sem WHERE daqui não para em DB_HealthScore.
-  // `npm run provisionar:usuario` cria a conta restrita a esta base.
-  if (!process.env.DB_APP_USER && user && !avisouFallback) {
-    avisouFallback = true
-    console.warn(
-      `[banco] DB_APP_USER não definido — escrevendo em ${APP_DATABASE} com a conta do ETL ` +
-      `("${user}"), que tem ALL PRIVILEGES nas demais bases de aplicação da casa. ` +
-      'Provisione a conta dedicada (npm run provisionar:usuario) e defina ' +
-      'DB_APP_USER/DB_APP_PASSWORD na stack.',
+  if (!host) {
+    throw new Error(
+      'Banco da aplicação sem host. Defina DB_APP_HOST (ou DB_MARIA_HOST) na stack.',
     )
   }
-  if (!host || !user) {
+  // Usuário e senha NÃO caem mais nas DB_MARIA_*. Até 12/11/2026 caíam, e a
+  // aplicação escrevia com a conta do ETL. Nessa data `DB_HealthScore` foi
+  // restrita a `hs_app` + admin: a conta do ETL perdeu o acesso, então o
+  // fallback não só é indesejado como não funciona mais — produziria um
+  // "Access denied for user 'DevSebratel'" que não diz o que fazer.
+  //
+  // Esta mensagem diz. A API continua subindo (o pool é preguiçoso e só o
+  // módulo de Planos depende dele); quem abrir a tela vê o que falta.
+  if (!user || !password) {
     throw new Error(
-      'Banco da aplicação não configurado. Defina DB_APP_HOST/USER/PASSWORD ' +
-      '(ou reaproveite DB_MARIA_HOST/USER/PASSWORD) na stack.',
+      `Banco da aplicação sem credencial própria. Defina DB_APP_USER e DB_APP_PASSWORD na stack — ` +
+      `${APP_DATABASE} só aceita a conta da aplicação (hs_app) e a de administração. ` +
+      'A conta do ETL (DB_MARIA_USER) não serve mais aqui, de propósito. ' +
+      "Para criar a conta: npm run provisionar:usuario -- --senha '…'",
     )
   }
   return { host, port, user, password }
