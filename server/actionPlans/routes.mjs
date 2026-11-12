@@ -12,7 +12,15 @@
 import { Router } from 'express'
 import { isReady } from '../db.mjs'
 import { validateEditedActions } from './schema.mjs'
-import { startRun, selectClients, retryRecommendation, DEFAULT_CRITERIO, MAX_CONCURRENCY } from './runner.mjs'
+import { startRun, selectClients, retryRecommendation, selecionarPorRegua, DEFAULT_CRITERIO, MAX_CONCURRENCY } from './runner.mjs'
+import { atLeast, canEditSector, SECTOR_LABELS } from '../roles.mjs'
+import { getPlanState, invalidatePlanState } from './planState.mjs'
+import {
+  getSettings, listSettings, saveSettings, settingsHistory,
+  listRulers, createRuler, archiveRuler,
+  abrirPlano, encerrarMembership, encerrarPlano, listMemberships, getMembership,
+  creditosDoContrato, revogarCredito, efetividadePorSetor, resumoEmPlano,
+} from './membership.mjs'
 import { runOutcomeEvaluation, DEFAULT_PRAZO_DIAS } from './outcomes.mjs'
 import {
   listRuns, getRun, listRecommendationsByRun, getRecommendation,
@@ -231,6 +239,160 @@ export function actionPlanRoutes(requireAuth) {
 
   r.post('/ia/testar', requireAuth({ minRole: 'admin' }), async (_req, res) => {
     try { res.json(await testarIA()) } catch (e) { fail(res, e) }
+  })
+
+  // ─────────────────────────────────────────────────────────────
+  // Régua, permanência e crédito
+  // ─────────────────────────────────────────────────────────────
+
+  // Um power user só mexe no SEU setor. Vale para régua, plano e encerramento:
+  // o escopo que já governa os pesos dos indicadores governa os planos também,
+  // sem papel novo.
+  function exigeSetor(req, setor) {
+    if (!setor) throw new Error('Informe o setor.')
+    if (!canEditSector(req.user.scopes, setor)) {
+      const label = SECTOR_LABELS[setor] || setor
+      throw new Error(`Sua conta não edita o setor "${label}".`)
+    }
+    return setor
+  }
+
+  // ─── Teto de crédito por setor ───────────────────────────────
+  r.get('/action-plans/settings', requireAuth(), async (_req, res) => {
+    try { res.json({ setores: await listSettings() }) } catch (e) { fail(res, e) }
+  })
+
+  // O TETO é do power user do setor — decisão de negócio, cobrada depois.
+  // A VALIDADE é de admin: se o mesmo papel mexesse nos dois, crédito alto e
+  // validade longa sairiam juntos e o crédito deixaria de expirar, que é
+  // justamente o que separa plano que resolveu de plano que foi arquivado.
+  r.put('/action-plans/settings/:setor', requireAuth({ minRole: 'power_user' }), async (req, res) => {
+    try {
+      const setor = exigeSetor(req, req.params.setor)
+      const { creditoMaximo, validadeDias } = req.body || {}
+      if (validadeDias != null && !atLeast(req.user.role, 'admin')) {
+        throw new Error('Mudar a validade do crédito é de administrador. O teto de pontos é seu.')
+      }
+      res.json(await saveSettings({ setor, creditoMaximo, validadeDias }, req.user.email))
+    } catch (e) { fail(res, e) }
+  })
+
+  r.get('/action-plans/settings/:setor/historico', requireAuth(), async (req, res) => {
+    try { res.json({ historico: await settingsHistory(req.params.setor, req.query.limite) }) } catch (e) { fail(res, e) }
+  })
+
+  // ─── Régua ───────────────────────────────────────────────────
+  r.get('/action-plans/rulers', requireAuth(), async (req, res) => {
+    try {
+      res.json({ reguas: await listRulers({ setor: req.query.setor || undefined }) })
+    } catch (e) { fail(res, e) }
+  })
+
+  r.post('/action-plans/rulers', requireAuth({ minRole: 'power_user' }), async (req, res) => {
+    try {
+      const b = req.body || {}
+      exigeSetor(req, b.setor)
+      res.json(await createRuler(b, req.user.email))
+    } catch (e) { fail(res, e) }
+  })
+
+  r.delete('/action-plans/rulers/:id', requireAuth({ minRole: 'power_user' }), async (req, res) => {
+    try { res.json(await archiveRuler(req.params.id)) } catch (e) { fail(res, e) }
+  })
+
+  // Prévia: quantos contratos a régua pega, e quantos desses já estão em
+  // plano. Os dois números juntos, sempre — abrir um plano de 400 que entra
+  // com 90 é a frustração que isto evita.
+  r.post('/action-plans/rulers/preview', requireAuth({ minRole: 'power_user' }), async (req, res) => {
+    try {
+      const b = req.body || {}
+      const setor = exigeSetor(req, b.setor)
+      const estado = await getPlanState()
+      res.json(selecionarPorRegua(setor, b.definicao || {}, estado.emPlano))
+    } catch (e) { fail(res, e) }
+  })
+
+  // ─── Planos ──────────────────────────────────────────────────
+  r.post('/action-plans/plans', requireAuth({ minRole: 'power_user' }), async (req, res) => {
+    try {
+      const b = req.body || {}
+      const setor = exigeSetor(req, b.setor)
+      const estado = await getPlanState()
+      const sel = selecionarPorRegua(setor, b.definicao || {}, estado.emPlano)
+      const out = await abrirPlano({
+        setor, nome: b.nome, rulerId: b.rulerId ?? null,
+        criterio: b.definicao || {}, origem: b.origem || 'manual',
+        creditoPontos: b.creditoPontos ?? null,
+        contratos: sel.selecionados,
+      }, req.user.email)
+      invalidatePlanState()
+      res.json({ ...out, casaram: sel.casaram, jaEmPlano: sel.jaEmPlano })
+    } catch (e) { fail(res, e) }
+  })
+
+  r.get('/action-plans/memberships', requireAuth(), async (req, res) => {
+    try {
+      res.json({
+        permanencias: await listMemberships({
+          runId: req.query.runId || undefined,
+          contratoId: req.query.contrato || undefined,
+          apenasAbertas: req.query.abertas === '1',
+        }),
+      })
+    } catch (e) { fail(res, e) }
+  })
+
+  // Encerrar EXIGE desfecho. `sem_exito` não credita — é essa assimetria que
+  // faz o campo valer alguma coisa; sem ela todo encerramento seria "deu
+  // certo" e o módulo não produziria nenhum aprendizado.
+  r.post('/action-plans/memberships/:id/encerrar', requireAuth({ minRole: 'power_user' }), async (req, res) => {
+    try {
+      const perm = await getMembership(req.params.id)
+      if (!perm) throw new Error('Permanência não encontrada.')
+      exigeSetor(req, perm.setor)
+      const b = req.body || {}
+      const out = await encerrarMembership({
+        membershipId: req.params.id, desfecho: b.desfecho,
+        scoreSaida: b.scoreSaida ?? null, observacao: b.observacao ?? null,
+      }, req.user.email)
+      invalidatePlanState()
+      res.json(out)
+    } catch (e) { fail(res, e) }
+  })
+
+  r.post('/action-plans/plans/:runId/encerrar', requireAuth({ minRole: 'power_user' }), async (req, res) => {
+    try {
+      const run = await getRun(req.params.runId)
+      if (!run) throw new Error('Plano não encontrado.')
+      exigeSetor(req, run.setor)
+      const out = await encerrarPlano({
+        runId: req.params.runId, desfecho: req.body?.desfecho, observacao: req.body?.observacao ?? null,
+      }, req.user.email)
+      invalidatePlanState()
+      res.json(out)
+    } catch (e) { fail(res, e) }
+  })
+
+  // ─── Crédito ─────────────────────────────────────────────────
+  r.get('/action-plans/contratos/:id/creditos', requireAuth(), async (req, res) => {
+    try { res.json({ creditos: await creditosDoContrato(req.params.id) }) } catch (e) { fail(res, e) }
+  })
+
+  r.delete('/action-plans/creditos/:id', requireAuth({ minRole: 'admin' }), async (req, res) => {
+    try {
+      const out = await revogarCredito(req.params.id, req.user.email)
+      invalidatePlanState()
+      res.json(out)
+    } catch (e) { fail(res, e) }
+  })
+
+  // ─── O que o módulo existe para responder ────────────────────
+  // Medido pelo score das engines (entrada x saída), nunca pelo creditado:
+  // somar o próprio crédito ao resultado provaria que todo plano funciona.
+  r.get('/action-plans/efetividade', requireAuth(), async (_req, res) => {
+    try {
+      res.json({ porSetor: await efetividadePorSetor(), emPlano: await resumoEmPlano() })
+    } catch (e) { fail(res, e) }
   })
 
   return r

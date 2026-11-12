@@ -37,6 +37,7 @@ import { getOfficialConfig, setOfficialConfigs, setOfficialThresholds, mergeConf
 import { withDefaults } from './engineDefaults.mjs'
 import { runChurnForecast } from './churnForecast.mjs'
 import { actionPlanRoutes } from './actionPlans/routes.mjs'
+import { getPlanState } from './actionPlans/planState.mjs'
 
 const PORT = Number(process.env.API_PORT) || 8787
 const ALLOWED_DOMAIN = (process.env.ALLOWED_DOMAIN || 'sebratel.com.br').toLowerCase()
@@ -213,11 +214,14 @@ app.post('/api/churn-forecast', requireAuth(), (req, res) => {
 
 // Dashboard + IA — 7 engines + ranking combinado por cliente, no servidor.
 // POST /api/dashboard { configs:{financial,...}, thresholds?, name?, contract?, city?, topN? }
-app.post('/api/dashboard', requireAuth(), (req, res) => {
+app.post('/api/dashboard', requireAuth(), async (req, res) => {
   const clients = getClients()
   if (!clients.length) return res.status(503).json({ error: 'Base ainda não materializada no backend (snapshot ausente).' })
   try {
     const b = req.body || {}
+    // Quem está em plano e com quanto de crédito. Nunca lança: sem banco,
+    // volta vazio e o dashboard roda como antes do módulo existir.
+    const plano = await getPlanState()
     // Config OFICIAL do servidor manda; se ainda não gravada, cai no que o
     // cliente enviou (compat — nada quebra antes de um admin publicar a oficial).
     const official = getOfficialConfig()
@@ -228,8 +232,17 @@ app.post('/api/dashboard', requireAuth(), (req, res) => {
       thresholds: official?.thresholds ?? b.thresholds,
       monthly: getDataset()?.monthly || [],
       name: b.name, contract: b.contract, city: b.city, classification: b.classification, topN: b.topN,
+      emPlano: plano.emPlano, creditos: plano.creditos,
+      // LIGADO por padrão: a tela operacional não repete quem já está sendo
+      // tratado. Desligar é escolha explícita de quem abriu.
+      ocultarEmPlano: b.ocultarEmPlano !== false,
     })
-    res.json({ ...result, meta: datasetStatus(), monthly: getDataset()?.monthly || [] })
+    res.json({
+      ...result,
+      planos: { disponivel: plano.disponivel, total: plano.total, porSetor: plano.porSetor },
+      meta: datasetStatus(),
+      monthly: getDataset()?.monthly || [],
+    })
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
@@ -238,7 +251,7 @@ app.post('/api/dashboard', requireAuth(), (req, res) => {
 // Pontuação de uma engine sobre a base materializada, paginada.
 // POST /api/engine/:key  { config, thresholds?, page?, pageSize?, search?, city?, classification? }
 // A config/limiares vêm por-usuário (ficam no navegador) e viajam na requisição.
-app.post('/api/engine/:key', requireAuth(), (req, res) => {
+app.post('/api/engine/:key', requireAuth(), async (req, res) => {
   const { key } = req.params
   if (!ENGINE_KEYS.includes(key)) return res.status(404).json({ error: `Engine desconhecida: ${key}` })
   const clients = getClients()
@@ -246,6 +259,7 @@ app.post('/api/engine/:key', requireAuth(), (req, res) => {
   try {
     const b = req.body || {}
     const official = getOfficialConfig()
+    const plano = await getPlanState()
     const result = runEngine(key, {
       clients,
       config: withDefaults(official?.configs ?? b.configs ?? {})[key] ?? b.config,
@@ -254,8 +268,14 @@ app.post('/api/engine/:key', requireAuth(), (req, res) => {
       page: b.page, pageSize: b.pageSize,
       name: b.name, contract: b.contract, city: b.city, classification: b.classification,
       sortKey: b.sortKey, sortDir: b.sortDir,
+      emPlano: plano.emPlano, creditos: plano.creditos,
+      ocultarEmPlano: b.ocultarEmPlano !== false,
     })
-    res.json({ ...result, meta: datasetStatus() })
+    res.json({
+      ...result,
+      planos: { disponivel: plano.disponivel, total: plano.total, porSetor: plano.porSetor },
+      meta: datasetStatus(),
+    })
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

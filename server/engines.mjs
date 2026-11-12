@@ -128,6 +128,27 @@ export function runEngine(key, opts = {}) {
   // ("signals.lateInvoices"); arrays ordenam pelo tamanho, classification pela
   // severidade, números numericamente e o resto por localeCompare pt-BR.
   if (opts.classification) scores = scores.filter((s) => s.classification === opts.classification)
+
+  // ─── Planos de ação ───
+  // Marca quem está em plano e anexa o crédito vigente. `.map` com spread de
+  // propósito: `data.scores` é o array CACHEADO da população — mutar aqui
+  // contaminaria a próxima requisição de todo mundo.
+  //
+  // O que vem acima (`aggregates`, `distribution`, `analyzed`) já está
+  // fechado: esconder é filtro de LISTA, nunca de contagem.
+  const emPlano = opts.emPlano || null
+  const creditos = opts.creditos || null
+  if (emPlano || creditos) {
+    scores = scores.map((s) => ({
+      ...s,
+      emPlano: emPlano ? emPlano.has(String(s.customerId)) : false,
+      creditoPlano: creditos ? (creditos.get(String(s.customerId)) ?? 0) : 0,
+    }))
+  }
+  const emPlanoCount = emPlano ? scores.filter((s) => s.emPlano).length : 0
+  const hiddenByPlan = opts.ocultarEmPlano && emPlano ? emPlanoCount : 0
+  if (hiddenByPlan) scores = scores.filter((s) => !s.emPlano)
+
   const CLASS_RANK = { critical: 0, high_risk: 1, attention: 2, healthy: 3, excellent: 4 }
   const sortKey = typeof opts.sortKey === 'string' && opts.sortKey ? opts.sortKey : null
   const dir = opts.sortDir === 'desc' ? -1 : 1
@@ -160,7 +181,10 @@ export function runEngine(key, opts = {}) {
   const pageScores = scores.slice(page * pageSize, page * pageSize + pageSize)
 
   const { scores: _omit, ...aggregates } = data
-  return { aggregates, distribution, cities, scores: pageScores, total, analyzed, populationTotal: population.length, page, pageSize }
+  return {
+    aggregates, distribution, cities, scores: pageScores, total, analyzed,
+    populationTotal: population.length, page, pageSize, emPlanoCount, hiddenByPlan,
+  }
 }
 
 // ─── Score de TODOS os clientes (para o histórico/timeline) ────
@@ -218,7 +242,14 @@ export function scoreEngineAllClients(key, opts = {}) {
 // Substitui o cálculo client-side (useEngineSummaries + buildClientRiskRanking)
 // que hoje roda no navegador sobre a base inteira.
 export function runDashboard(clients, opts = {}) {
-  const { configs = {}, thresholds, monthly = [], name, contract, city, classification, topN = 12 } = opts
+  const {
+    configs = {}, thresholds, monthly = [], name, contract, city, classification, topN = 12,
+    // Planos de ação. Vêm do MariaDB da aplicação e são OPCIONAIS: sem banco,
+    // o dashboard roda igual, com ninguém em plano e crédito zero.
+    //   emPlano  Set<contratoId> com permanência aberta
+    //   creditos Map<contratoId, pontos> de crédito vigente
+    emPlano = null, creditos = null, ocultarEmPlano = false,
+  } = opts
   applyHealthThresholds(thresholds && typeof thresholds === 'object' ? thresholds : DEFAULT_HEALTH_THRESHOLDS)
 
   const summaries = []
@@ -261,6 +292,11 @@ export function runDashboard(clients, opts = {}) {
       contractNumber: clientById.get(e.customerId)?.contractNumber || '',
       overallHealth, overallChurnRisk, classification: scoreToHealthClass(overallHealth),
       revenueRisk: (overallChurnRisk / 100) * e.monthlyValue, enginesPresent: e.count, byEngine: e.byEngine,
+      // O crédito de plano anda AO LADO do score medido, nunca somado dentro
+      // dele: `overallHealth` e `classification` continuam vindo só das
+      // engines. Quem exibe mostra os dois; quem rankeia usa o medido.
+      emPlano: emPlano ? emPlano.has(String(e.customerId)) : false,
+      creditoPlano: creditos ? (creditos.get(String(e.customerId)) ?? 0) : 0,
     })
   }
   ranking.sort((a, b) => a.overallHealth - b.overallHealth)
@@ -274,6 +310,11 @@ export function runDashboard(clients, opts = {}) {
     atRiskCount: ranking.filter(isAtRisk).length,
     revenueAtRiskMonthly,
     annualRevenueRisk: revenueAtRiskMonthly * 12,
+    // Contados sobre o ranking INTEIRO, mesmo quando a lista os esconde: é o
+    // que permite a tela dizer "1.319 críticos · 214 em plano" em vez de
+    // simplesmente mostrar 1.105 e ninguém notar a diferença.
+    emPlanoCount: ranking.filter((r) => r.emPlano).length,
+    criticalEmPlanoCount: ranking.filter((r) => r.emPlano && r.classification === 'critical').length,
   }
 
   const baseCounts = {
@@ -291,6 +332,11 @@ export function runDashboard(clients, opts = {}) {
   if (ct) visible = visible.filter((r) => String(r.customerId).toLowerCase().includes(ct) || String(r.contractNumber).toLowerCase().includes(ct))
   if (city) visible = visible.filter((r) => r.city === city)
   if (classification) visible = visible.filter((r) => r.classification === classification)
+  // Contrato em plano sai da LISTA, nunca dos KPIs: `stats` já foi fechado
+  // sobre o ranking inteiro, algumas linhas acima. Se o filtro valesse lá,
+  // abrir plano seria a forma mais barata de melhorar o indicador.
+  const hiddenByPlan = ocultarEmPlano ? visible.filter((r) => r.emPlano).length : 0
+  if (ocultarEmPlano) visible = visible.filter((r) => !r.emPlano)
   const top = visible.slice(0, topN)
 
   // Sinais brutos por cliente do topo (para a explicação de IA).
@@ -315,5 +361,9 @@ export function runDashboard(clients, opts = {}) {
   const globalHealth = summaries.length ? Math.round(summaries.reduce((a, s) => a + s.avgHealthScore, 0) / summaries.length) : 0
   const cities = Array.from(new Set(clients.map((c) => c.city).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'pt-BR'))
 
-  return { summaries, globalHealth, ranking: { ...stats, visibleTotal: visible.length, top: topWithSignals, radar }, baseCounts, cities }
+  return {
+    summaries, globalHealth,
+    ranking: { ...stats, visibleTotal: visible.length, hiddenByPlan, top: topWithSignals, radar },
+    baseCounts, cities,
+  }
 }

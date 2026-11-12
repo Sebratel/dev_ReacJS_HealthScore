@@ -89,6 +89,81 @@ export function selectClients(criterio = {}) {
   return { selecionados: filtrados.slice(0, qtd), criterio: c, disponiveis: filtrados.length }
 }
 
+// ─── Régua de plano ────────────────────────────────────────────
+// Irmã de selectClients, com três diferenças que importam:
+//
+//   por SETOR, não só Financeiro — cada power user tem o seu;
+//   sem teto de 200 — a régua de um plano pode pegar 800 contratos de boa fé;
+//     a rodada de IA não pode, porque lá cada cliente custa uma chamada paga;
+//   devolve separado quem JÁ ESTÁ em plano aberto do setor — a régua volta a
+//     casar naturalmente com quem está sendo tratado, e misturar os dois na
+//     prévia faria o usuário abrir um plano de 400 que entra com 90.
+export const MAX_CONTRATOS_POR_PLANO = 2000
+
+export function selecionarPorRegua(setor, definicao = {}, emPlano = null) {
+  const clients = getClients()
+  if (!clients.length) throw new Error('Base ainda não materializada no backend (snapshot ausente).')
+
+  const official = getOfficialConfig()
+  const config = official?.configs?.[setor]
+  if (!config) {
+    throw new Error(
+      `Config oficial de "${setor}" não publicada. Um power user precisa publicar os pesos em ` +
+      'Configurações antes de abrir planos — senão cada plano usaria uma régua diferente.',
+    )
+  }
+
+  const { scores } = runEngine(setor, {
+    clients,
+    config,
+    thresholds: official?.thresholds,
+    monthly: getDataset()?.monthly || [],
+    city: definicao.cidade || undefined,
+    page: 0,
+    pageSize: MAX_CONTRATOS_POR_PLANO,
+  })
+
+  const rankLimite = definicao.classificacaoMinima ? (CLASS_RANK[definicao.classificacaoMinima] ?? 9) : null
+  const casou = scores.filter((s) => {
+    if (rankLimite != null && (CLASS_RANK[s.classification] ?? 9) > rankLimite) return false
+    if (definicao.scoreMax != null && s.healthScore > Number(definicao.scoreMax)) return false
+    if (definicao.scoreMin != null && s.healthScore < Number(definicao.scoreMin)) return false
+    const mrr = Number(s.monthlyValue) || 0
+    if (definicao.mrrMin != null && mrr < Number(definicao.mrrMin)) return false
+    if (definicao.mrrMax != null && mrr > Number(definicao.mrrMax)) return false
+    // Régua por INDICADOR: "quem perde 10 pontos ou mais em atraso de fatura".
+    // É o corte que o power user do setor realmente quer — "crítico" mistura
+    // sete causas diferentes num rótulo só.
+    if (definicao.indicador?.key) {
+      const ind = (s.indicators || []).find((i) => i.key === definicao.indicador.key)
+      if (!ind) return false
+      const pts = Number(ind.points) || 0
+      if (definicao.indicador.pontosMax != null && pts > Number(definicao.indicador.pontosMax)) return false
+      if (definicao.indicador.pontosMin != null && pts < Number(definicao.indicador.pontosMin)) return false
+    }
+    return true
+  })
+
+  const jaEmPlano = emPlano ? casou.filter((s) => emPlano.has(String(s.customerId))) : []
+  const novos = emPlano ? casou.filter((s) => !emPlano.has(String(s.customerId))) : casou
+  const limite = Math.min(MAX_CONTRATOS_POR_PLANO, Math.max(1, Number(definicao.quantidade) || MAX_CONTRATOS_POR_PLANO))
+
+  return {
+    setor,
+    selecionados: novos.slice(0, limite).map((s) => ({
+      contratoId: String(s.customerId),
+      nome: s.customerName,
+      cidade: s.city,
+      mrr: Number(s.monthlyValue) || 0,
+      score: s.healthScore,
+      classificacao: s.classification,
+    })),
+    casaram: casou.length,
+    jaEmPlano: jaEmPlano.length,
+    disponiveis: novos.length,
+  }
+}
+
 // Uma geração: chama o provedor, valida e devolve o que gravar. Concentrada
 // aqui para a rodada e a "nova tentativa" percorrerem exatamente o caminho.
 async function gerarEValidar({ provedor, cfg, template, dossie }) {
