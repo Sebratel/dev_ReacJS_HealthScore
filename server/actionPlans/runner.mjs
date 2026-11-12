@@ -6,7 +6,7 @@
 // tela /financeiro usa, com a config oficial. Se um dia os pesos mudarem, a
 // rodada muda junto — que é o comportamento certo.
 // ─────────────────────────────────────────────────────────────────────────
-import { runEngine } from '../engines.mjs'
+import { runEngine, scoreEngineAllClients } from '../engines.mjs'
 import { getClients, getDataset } from '../dataset.mjs'
 import { getOfficialConfig } from '../officialConfig.mjs'
 import { provedorAtivo } from '../ia/registro.mjs'
@@ -93,12 +93,17 @@ export function selectClients(criterio = {}) {
 // Irmã de selectClients, com três diferenças que importam:
 //
 //   por SETOR, não só Financeiro — cada power user tem o seu;
-//   sem teto de 200 — a régua de um plano pode pegar 800 contratos de boa fé;
-//     a rodada de IA não pode, porque lá cada cliente custa uma chamada paga;
+//   em MASSA — a régua existe para pegar centenas ou milhares de contratos
+//     de uma vez; a rodada de IA não pode, porque lá cada cliente custa uma
+//     chamada paga ao provedor (por isso MAX_CLIENTES = 200 lá em cima);
 //   devolve separado quem JÁ ESTÁ em plano aberto do setor — a régua volta a
 //     casar naturalmente com quem está sendo tratado, e misturar os dois na
 //     prévia faria o usuário abrir um plano de 400 que entra com 90.
-export const MAX_CONTRATOS_POR_PLANO = 2000
+//
+// Teto alto de propósito. Ele não é um limite técnico: é um freio contra
+// "selecionei a base inteira sem querer". A tela sempre mostra quantos
+// casaram ANTES de criar, então passar disso é decisão consciente.
+export const MAX_CONTRATOS_POR_PLANO = 20000
 
 export function selecionarPorRegua(setor, definicao = {}, emPlano = null) {
   const clients = getClients()
@@ -113,18 +118,22 @@ export function selecionarPorRegua(setor, definicao = {}, emPlano = null) {
     )
   }
 
-  const { scores } = runEngine(setor, {
+  // `scoreEngineAllClients`, não `runEngine`: aquele devolve uma PÁGINA, e a
+  // paginação dele é travada em 2.000 (`Math.min(2000, …)`, por causa do
+  // tamanho do payload HTTP do "Ver dados"). Aqui não há payload — a seleção
+  // roda dentro do processo —, e uma régua "todos em atenção" passa de 2.000
+  // com folga. Os dois usam o mesmo cache de pontuação.
+  const scores = scoreEngineAllClients(setor, {
     clients,
     config,
     thresholds: official?.thresholds,
     monthly: getDataset()?.monthly || [],
-    city: definicao.cidade || undefined,
-    page: 0,
-    pageSize: MAX_CONTRATOS_POR_PLANO,
   })
 
   const rankLimite = definicao.classificacaoMinima ? (CLASS_RANK[definicao.classificacaoMinima] ?? 9) : null
+  const cidade = definicao.cidade || null
   const casou = scores.filter((s) => {
+    if (cidade && s.city !== cidade) return false
     if (rankLimite != null && (CLASS_RANK[s.classification] ?? 9) > rankLimite) return false
     if (definicao.scoreMax != null && s.healthScore > Number(definicao.scoreMax)) return false
     if (definicao.scoreMin != null && s.healthScore < Number(definicao.scoreMin)) return false

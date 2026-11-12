@@ -222,6 +222,55 @@ export async function resumoEmPlano() {
 
 // ─── Abrir plano ───────────────────────────────────────────────
 
+// Quantas permanências por INSERT. Medido contra o banco real (186.219.134.247,
+// ~70 ms de ida e volta): linha a linha, 1.000 contratos levam 70 SEGUNDOS;
+// em lotes de 500, 567 ms. São 123x, e é a diferença entre "abre um plano de
+// 5.000" e "a requisição morre no caminho".
+//
+// 500 e não 5.000 porque o pacote do MariaDB tem teto (`max_allowed_packet`)
+// e o erro dele é obscuro; com 5 colunas curtas, 500 linhas ficam na casa das
+// dezenas de KB, bem longe do limite padrão de 16 MB.
+const LOTE = 500
+
+/**
+ * Insere as permanências em lote, caindo para linha a linha só no lote que
+ * bater em duplicata.
+ *
+ * A duplicata é esperada e NÃO é erro: `uk_member_um_aberto_por_setor` recusa
+ * quem já tem plano aberto no setor. A régua já exclui esses na seleção, mas
+ * entre a prévia e o clique alguém pode ter aberto outro plano — e aí o lote
+ * inteiro falharia por causa de uma linha. O fallback isola a culpada sem
+ * perder as outras 499.
+ */
+async function inserirPermanencias(conn, linhas) {
+  const SQL = `insert into action_plan_memberships
+     (run_id, contrato_id, setor, score_entrada, classificacao_entrada) values `
+  let entraram = 0
+  let jaEmPlano = 0
+
+  for (let i = 0; i < linhas.length; i += LOTE) {
+    const lote = linhas.slice(i, i + LOTE)
+    try {
+      await conn.query(SQL + lote.map(() => '(?, ?, ?, ?, ?)').join(','), lote.flat())
+      entraram += lote.length
+    } catch (e) {
+      if (e?.code !== 'ER_DUP_ENTRY') throw e
+      // Statement abortado não desfaz a transação no InnoDB: dá para reinserir
+      // linha a linha e descobrir exatamente quem já estava em plano.
+      for (const linha of lote) {
+        try {
+          await conn.execute(SQL + '(?, ?, ?, ?, ?)', linha)
+          entraram++
+        } catch (e2) {
+          if (e2?.code === 'ER_DUP_ENTRY') { jaEmPlano++; continue }
+          throw e2
+        }
+      }
+    }
+  }
+  return { entraram, jaEmPlano }
+}
+
 /**
  * Cria o plano e coloca os contratos dentro dele.
  *
@@ -264,26 +313,14 @@ export async function abrirPlano({
     )
     const runId = run.insertId
 
-    let entraram = 0
-    let jaEmPlano = 0
-    for (const c of contratos) {
-      const contratoId = String(c.contratoId ?? c.clientId ?? c)
-      if (!contratoId) continue
-      try {
-        await conn.execute(
-          `insert into action_plan_memberships
-             (run_id, contrato_id, setor, score_entrada, classificacao_entrada)
-           values (?, ?, ?, ?, ?)`,
-          [runId, contratoId, setor, c.score ?? null, c.classificacao ?? null],
-        )
-        entraram++
-      } catch (e) {
-        // uk_member_um_aberto_por_setor: já há permanência aberta no setor.
-        if (e?.code === 'ER_DUP_ENTRY') { jaEmPlano++; continue }
-        throw e
-      }
-    }
+    const linhas = contratos
+      .map((c) => {
+        const contratoId = String(c.contratoId ?? c.clientId ?? c)
+        return contratoId ? [runId, contratoId, setor, c.score ?? null, c.classificacao ?? null] : null
+      })
+      .filter(Boolean)
 
+    const { entraram, jaEmPlano } = await inserirPermanencias(conn, linhas)
     if (!entraram) {
       throw new Error('Todos os contratos da régua já estão em plano deste setor.')
     }

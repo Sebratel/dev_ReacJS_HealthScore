@@ -308,7 +308,17 @@ export function actionPlanRoutes(requireAuth) {
       const b = req.body || {}
       const setor = exigeSetor(req, b.setor)
       const estado = await getPlanState()
-      res.json(selecionarPorRegua(setor, b.definicao || {}, estado.emPlano))
+      const sel = selecionarPorRegua(setor, b.definicao || {}, estado.emPlano)
+      // Só uma AMOSTRA volta. Uma régua larga pega milhares de contratos, e
+      // mandar todos para a tela seria um JSON de megabytes que ninguém lê —
+      // quem decide é a contagem. A criação reexecuta a régua no servidor.
+      const AMOSTRA = 50
+      res.json({
+        ...sel,
+        selecionados: sel.selecionados.slice(0, AMOSTRA),
+        amostraDe: sel.selecionados.length,
+        truncado: sel.selecionados.length > AMOSTRA,
+      })
     } catch (e) { fail(res, e) }
   })
 
