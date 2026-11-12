@@ -45,15 +45,29 @@ if (String(senha).length < 16) {
   process.exit(1)
 }
 
+// Conta que CRIA o usuário. Precisa do privilégio global CREATE USER, que a
+// conta do ETL não tem (conferido em 12/11/2026: `DevSebratel` só tem PROCESS
+// como global). Por isso a conta de admin entra separada, em DB_ADMIN_*.
+//
+// Fica em variável de ambiente, e não em argumento da linha de comando, de
+// propósito: argumento aparece na lista de processos do sistema e no
+// histórico do shell. A senha de admin do MariaDB não deve passar por nenhum
+// dos dois — some do `.env` assim que a conta estiver criada.
 const master = {
-  host: process.env.DB_MARIA_HOST,
-  port: Number(process.env.DB_MARIA_PORT) || 3306,
-  user: process.env.DB_MARIA_USER,
-  password: process.env.DB_MARIA_PASSWORD,
+  host: process.env.DB_ADMIN_HOST || process.env.DB_MARIA_HOST,
+  port: Number(process.env.DB_ADMIN_PORT || process.env.DB_MARIA_PORT) || 3306,
+  user: process.env.DB_ADMIN_USER || process.env.DB_MARIA_USER,
+  password: process.env.DB_ADMIN_USER ? process.env.DB_ADMIN_PASSWORD : process.env.DB_MARIA_PASSWORD,
 }
 if (!master.host || !master.user) {
-  console.error('DB_MARIA_HOST/USER ausentes — este script usa a conta master do .env para criar a conta nova.')
+  console.error('DB_ADMIN_HOST/USER (ou DB_MARIA_*) ausentes — é com esta conta que o usuário novo é criado.')
   process.exit(1)
+}
+if (!process.env.DB_ADMIN_USER) {
+  console.warn(
+    `Aviso: usando ${master.user} (DB_MARIA_USER). Se ela não tiver CREATE USER, defina\n` +
+    '  DB_ADMIN_USER / DB_ADMIN_PASSWORD no .env com a conta de admin do MariaDB.\n',
+  )
 }
 
 console.log(`\nServidor : ${master.host}:${master.port}`)
