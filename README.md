@@ -155,6 +155,23 @@ npm test                # 77 testes de contrato, provedor e registro
 ACTION_PLAN_E2E=1 npm test   # + fluxo ponta a ponta (cria e derruba uma base)
 ```
 
+## Entrada pelo Hub Apps (iframe com login automático)
+
+O Health Score pode abrir **dentro do Hub Apps**. O Hub abre o sistema num iframe com `?sso_token=<JWT HS256 de 5 min>`; antes de o React montar, o front tira o token da URL e o troca na API (`POST /api/auth/hub`) por uma sessão de 8 h, guardada no `sessionStorage` do quadro. O papel (viewer / power_user / admin) continua vindo de `ADMIN_EMAILS` + `data/roles.json`.
+
+| Variável (serviço `api`) | Para quê |
+| --- | --- |
+| `HUB_SSO_SECRET` | Mesmo valor do `SSO_JWT_SECRET` do hub-api. Segredo: nunca em variável `VITE_`. |
+| `HUB_APP_ID` | Id do card do Health Score no Hub. Vazio = entrada pelo Hub desligada e `HUB_ONLY` ignorado. |
+| `HUB_ONLY` | `true` = só pelo Hub, **sem exceção** (nem admin): o Google é recusado no servidor com `403 { code: "HUB_ONLY" }`, sessões já abertas param de valer e a aba solta mostra "Acesse pelo Hub Apps". Só vale com as duas acima. |
+| `HUB_URL` | Link do botão "Abrir o Hub Apps" (só https). Padrão: `https://hub-apps.sebratel.net.br`. |
+
+Rotas públicas de entrada: `GET /api/auth/config` → `{ hubSso, hubOnly, hubUrl }` e `POST /api/auth/hub`. Todas as demais rotas `/api` (inclusive `/api/dataset/lists`, que era pública) exigem Bearer; só `/api/health` fica aberta.
+
+O nginx do `web` manda `Content-Security-Policy: frame-ancestors 'self' https://hub-apps.sebratel.net.br https://hub-apps-staging.sebratel.net.br` (ver `docker/nginx.conf`). Não configure isso no "Advanced" do Nginx Proxy Manager, e não adicione `X-Frame-Options`.
+
+**Deploy, nesta ordem:** criar o card no Hub (SSO "passar token" + "Abrir dentro do Hub" + URL https do Health Score) → pôr `HUB_SSO_SECRET` e `HUB_APP_ID` na stack → redeploy → testar a entrada pelo Hub → só então `HUB_ONLY=true` e redeploy.
+
 ## Estrutura
 
 ```

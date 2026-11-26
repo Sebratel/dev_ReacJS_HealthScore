@@ -61,7 +61,9 @@ function LoginRoute() {
   return <Suspense fallback={<PageLoader />}><LoginPage /></Suspense>
 }
 
-export const router = createBrowserRouter([
+// Fábrica, não constante: o roteador lê a URL ao nascer, e precisa nascer
+// DEPOIS da entrada pelo Hub (main.tsx), que tira o ?sso_token da barra.
+export const createAppRouter = () => createBrowserRouter([
   { path: '/login', element: <LoginRoute /> },
   {
     path: '/',

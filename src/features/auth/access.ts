@@ -2,31 +2,37 @@
 // autoridade real é o backend, que revalida o papel em cada request de escrita.
 import { useAuthStore, hasRole, type Role } from '@/store/authStore'
 import { parseScopes, scopeCanEdit, type SectorKey } from '@/features/auth/sectors'
+import { currentBearer, hubOnlyRefusal } from '@/lib/apiClient'
 
 // GET/PUT autenticados "QUIETOS": enviam o token atual e, em falha (ex.: token
 // expirado), NÃO disparam o refresh silencioso do Google (prompt=none, que o
 // navegador bloqueia) nem deslogam. Usados no boot (papel + config oficial),
 // que não devem sequestrar o fluxo de autenticação. As chamadas de dados
 // continuam no apiClient normal (com refresh/logout).
+// Exceção: 403 HUB_ONLY é definitivo (o servidor só aceita entrada pelo Hub) e
+// encerra a sessão aqui também.
 export async function quietAuthedGet(path: string): Promise<Response | null> {
-  const token = useAuthStore.getState().accessToken
+  const token = currentBearer()
   if (!token) return null
   try {
-    return await fetch(path, { headers: { Authorization: `Bearer ${token}` } })
+    const res = await fetch(path, { headers: { Authorization: `Bearer ${token}` } })
+    if (await hubOnlyRefusal(res)) return null
+    return res
   } catch {
     return null
   }
 }
 
 export async function quietAuthedPut(path: string, body: unknown): Promise<void> {
-  const token = useAuthStore.getState().accessToken
+  const token = currentBearer()
   if (!token) return
   try {
-    await fetch(path, {
+    const res = await fetch(path, {
       method: 'PUT',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
+    await hubOnlyRefusal(res)
   } catch { /* silencioso — o backend é a autoridade; retenta no próximo save */ }
 }
 

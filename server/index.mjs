@@ -6,9 +6,10 @@
 //   PUT    /api/queries/:id       → grava override { sql } (editores)
 //   DELETE /api/queries/:id       → remove override, volta ao default (editores)
 //
-// Auth: header Authorization: Bearer <google_access_token>. O token é validado
-// no userinfo do Google; exige e-mail do domínio permitido e (se configurada)
-// presença na allowlist de editores para escrever. SQL é barrado pelo guard
+// Auth: header Authorization: Bearer <token> — access_token do Google ou sessão
+// aberta pelo Hub Apps (POST /api/auth/hub). Com HUB_ONLY ativo, só a do Hub
+// vale. Ver server/auth.mjs e server/hubSso.mjs. Exige e-mail do domínio
+// permitido; o papel sai de roles.mjs. SQL é barrado pelo guard
 // somente-leitura antes de gravar. Os overrides ficam num JSON compartilhado
 // com o ETL (scripts/queries/overrides.mjs).
 // ─────────────────────────────────────────────────────────────────────────
@@ -29,7 +30,7 @@ import { getClientHistory, getScoreHistoryStatus } from './scoreHistory.mjs'
 import { getMonthlyCohort } from './monthlyCohortStore.mjs'
 import { buildSuggestions, deriveLists } from '../src/features/cancellation-profiles/suggestionEngine.ts'
 import {
-  resolveAccess, atLeast, listRoles, setRole, deleteRole,
+  atLeast, listRoles, setRole, deleteRole,
   canEditSector, canEditQueryGroup, editableQueryGroups, hasAllSectors,
   SECTORS, SECTOR_LABELS,
 } from './roles.mjs'
@@ -38,6 +39,8 @@ import { withDefaults } from './engineDefaults.mjs'
 import { runChurnForecast } from './churnForecast.mjs'
 import { actionPlanRoutes } from './actionPlans/routes.mjs'
 import { getPlanState } from './actionPlans/planState.mjs'
+import { createRequireAuth, authRoutes } from './auth.mjs'
+import { hubSsoConfigured, hubOnlyActive, hubOnlyIgnored } from './hubSso.mjs'
 
 const PORT = Number(process.env.API_PORT) || 8787
 const ALLOWED_DOMAIN = (process.env.ALLOWED_DOMAIN || 'sebratel.com.br').toLowerCase()
@@ -61,59 +64,16 @@ app.use((req, res, next) => {
 })
 
 // ─── Auth ──────────────────────────────────────────────────────
-// Cache curto de token→usuário para não consultar o Google a cada request.
-const tokenCache = new Map() // token -> { user, exp }
-const TOKEN_TTL_MS = 5 * 60 * 1000
-
-async function getUserFromToken(token) {
-  const cached = tokenCache.get(token)
-  if (cached && cached.exp > Date.now()) return cached.user
-  let r
-  try {
-    r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-  } catch (e) {
-    // Falha de REDE: o container não alcançou o googleapis.com (egress/DNS).
-    console.warn('[auth] falha de rede ao validar token no Google userinfo:', e.message)
-    return null
-  }
-  if (!r.ok) { console.warn(`[auth] Google userinfo respondeu ${r.status} (token inválido/expirado?)`); return null }
-  const p = await r.json().catch(() => ({}))
-  if (!p.email || p.email_verified === false) { console.warn('[auth] token sem e-mail verificado'); return null }
-  const user = { email: String(p.email).toLowerCase(), name: p.name || p.email }
-  tokenCache.set(token, { user, exp: Date.now() + TOKEN_TTL_MS })
-  return user
-}
-
-// Auth + RBAC. minRole: 'viewer' (default) | 'power_user' | 'admin'.
-// req.user recebe { email, name, role, scopes } — papel efetivo e setores que
-// o usuário edita ('*' = todos), resolvidos em roles.mjs. O escopo não barra
-// leitura: quem entra vê todas as telas; ele só limita a ESCRITA por setor.
-function requireAuth({ minRole = 'viewer' } = {}) {
-  return async (req, res, next) => {
-    const m = /^Bearer (.+)$/.exec(req.headers.authorization || '')
-    if (!m) return res.status(401).json({ error: 'Token de autenticação ausente.' })
-    let user = null
-    try { user = await getUserFromToken(m[1]) } catch { user = null }
-    if (!user) return res.status(401).json({ error: 'Sessão inválida ou expirada. Entre novamente.' })
-    if (!user.email.endsWith('@' + ALLOWED_DOMAIN)) {
-      return res.status(403).json({ error: `Acesso restrito a contas @${ALLOWED_DOMAIN}.` })
-    }
-    const { role, scopes } = resolveAccess(user.email)
-    req.user = { ...user, role, scopes }
-    if (!atLeast(role, minRole)) {
-      const label = minRole === 'admin' ? 'administrador' : 'power user'
-      return res.status(403).json({ error: `Ação restrita a ${label}. Sua conta é "${role}".` })
-    }
-    next()
-  }
-}
+// Google ou Hub Apps; com HUB_ONLY, só Hub. Ver server/auth.mjs.
+const requireAuth = createRequireAuth()
 
 // ─── Rotas ─────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'churniq-api', overridesPath: OVERRIDES_PATH })
 })
+
+// Entrada (públicas): GET /api/auth/config e POST /api/auth/hub.
+app.use('/api', authRoutes())
 
 // Identidade + papel do usuário logado — o front usa pra mostrar/esconder
 // controles (pesos, SQL, limiares, gestão de usuários).
@@ -175,9 +135,11 @@ app.get('/api/dataset/status', requireAuth(), (_req, res) => {
 })
 
 // Metadados leves da base (tudo menos o array pesado de clientes) — o front
-// carrega isto no boot no lugar do snapshot de ~9 MB. Sem auth: são apenas
-// listas distintas/totais (o snapshot antigo já era um asset público).
-app.get('/api/dataset/lists', (_req, res) => {
+// carrega isto no boot no lugar do snapshot de ~9 MB. Era público ("só listas
+// distintas/totais"), mas as listas trazem nomes de vendedores, técnicos,
+// atendentes e pessoas das retiradas — e com HUB_ONLY nada sai sem a sessão do
+// Hub. O front só chama isto depois do login (MainLayout), com o Bearer.
+app.get('/api/dataset/lists', requireAuth(), (_req, res) => {
   const ds = getDataset()
   if (!ds) return res.status(503).json({ error: 'Base ainda não materializada no backend (snapshot ausente).' })
   const { clients, cancelledClients, withdrawalDetail, ...lists } = ds // exclui os arrays pesados
@@ -523,6 +485,10 @@ app.listen(PORT, () => {
   void migrateOnBoot()
   console.log(`ChurnIQ API ouvindo em :${PORT}`)
   console.log(`  domínio permitido: @${ALLOWED_DOMAIN}`)
+  console.log(`  entrada pelo Hub Apps: ${hubSsoConfigured() ? 'ligada' : 'desligada (HUB_SSO_SECRET/HUB_APP_ID vazios)'} · só pelo Hub: ${hubOnlyActive() ? 'SIM (Google recusado para todos)' : 'não'}`)
+  if (hubOnlyIgnored()) {
+    console.warn('  [auth] HUB_ONLY=true IGNORADO: falta HUB_SSO_SECRET e/ou HUB_APP_ID — sem eles ninguém entraria.')
+  }
   console.log(`  papéis: ADMIN_EMAILS/POWER_USER_EMAILS (env) + data/roles.json (tela)`)
   console.log(`  overrides: ${OVERRIDES_PATH}`)
 })
