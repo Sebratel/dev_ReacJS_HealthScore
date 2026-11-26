@@ -1,4 +1,5 @@
 import type { RealClient } from '@/types'
+import { apiFetch } from '@/lib/apiClient'
 
 export interface RealClientsMeta {
   generatedAt: string
@@ -175,7 +176,9 @@ export function loadRealData(): Promise<void> {
     // Carrega apenas os METADADOS/listas (sem o array pesado de clientes) do
     // backend. As telas de ranking/dashboard/IA buscam os clientes pontuados
     // sob demanda em /api/engine/* e /api/dashboard. Boot leve e ágil.
-    const res = await fetch('/api/dataset/lists', { cache: 'no-cache' })
+    // Autenticado (Bearer do Google ou da sessão do Hub): a rota deixou de ser
+    // pública. 401/HUB_ONLY encerram a sessão e o RequireAuth leva ao login.
+    const res = await apiFetch('/api/dataset/lists', { cache: 'no-cache' })
     if (!res.ok) throw new Error(`Não foi possível carregar os metadados da base (HTTP ${res.status}). O backend (/api) está no ar?`)
     const data = JSON.parse(await res.text()) as Partial<RealClientsFile>
 

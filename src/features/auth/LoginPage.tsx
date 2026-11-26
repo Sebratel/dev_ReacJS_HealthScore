@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, useReducedMotion, AnimatePresence } from 'framer-motion'
-import { AlertCircle, Info, Loader2, Lock, Shield } from 'lucide-react'
+import { AlertCircle, ExternalLink, Info, Loader2, Lock, Shield } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
+import {
+  HUB_URL_PADRAO, getAuthConfig, getHubLoginError, isFramed, isHubOnly, setAuthConfig,
+  type AuthConfig,
+} from '@/store/hubSession'
 import { cn } from '@/utils/cn'
 
 declare global {
@@ -59,12 +63,36 @@ export default function LoginPage() {
   const navigate = useNavigate()
   const setUser = useAuthStore((s) => s.setUser)
   const setAccessToken = useAuthStore((s) => s.setAccessToken)
+  const setVia = useAuthStore((s) => s.setVia)
   const reduced = !!useReducedMotion()
   const tokenClientRef = useRef<any>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Como entrar: lido no boot (hubEntry.ts); se falhou lá, tenta de novo aqui.
+  const [cfg, setCfg] = useState<AuthConfig | null>(() => getAuthConfig())
+  // Entrada pelo Hub que falhou (token vencido, já usado…): motivo vem do servidor.
+  const [hubErro] = useState(() => getHubLoginError())
+  const [framed] = useState(() => isFramed())
 
   useEffect(() => {
+    if (cfg) return
+    let vivo = true
+    fetch('/api/auth/config', { cache: 'no-store' })
+      .then((r) => (r.ok ? (r.json() as Promise<AuthConfig>) : null))
+      .then((c) => { if (vivo && c) { setAuthConfig(c); setCfg(c) } })
+      .catch(() => { /* sem config: tela padrão; o servidor ainda recusa com HUB_ONLY */ })
+    return () => { vivo = false }
+  }, [cfg])
+
+  const hubUrl = cfg?.hubUrl && /^https:\/\//i.test(cfg.hubUrl) ? cfg.hubUrl : HUB_URL_PADRAO
+  const soPeloHub = isHubOnly() || !!cfg?.hubOnly
+  // Dentro do quadro do Hub, cair aqui quer dizer que a sessão do Hub acabou —
+  // e o Google não abre em iframe. Mostra só o caminho de volta ao Hub.
+  const mostrarHub = soPeloHub || !!hubErro || (framed && !!cfg?.hubSso)
+
+  useEffect(() => {
+    // Só pelo Hub: nem carrega o Google Sign-In.
+    if (mostrarHub) return
     if (!clientId) { setError('VITE_GOOGLE_CLIENT_ID não configurado no .env.'); return }
 
     function init() {
@@ -83,6 +111,7 @@ export default function LoginPage() {
             setUser({ name: p.name ?? p.email, email: p.email, picture: p.picture })
             // Guarda o token para autenticar as chamadas ao backend (/api).
             setAccessToken(resp.access_token)
+            setVia('google')
             navigate('/', { replace: true })
           } catch {
             setError('Falha ao obter os dados da conta Google.')
@@ -101,7 +130,7 @@ export default function LoginPage() {
     script.onload = init
     script.onerror = () => setError('Não foi possível carregar o Google Sign-In.')
     document.head.appendChild(script)
-  }, [clientId, navigate, setUser, setAccessToken])
+  }, [clientId, navigate, setUser, setAccessToken, setVia, mostrarHub])
 
   const handleGoogle = () => {
     if (!tokenClientRef.current) { setError('Google Sign-In ainda não carregou. Tente novamente.'); return }
@@ -177,12 +206,37 @@ export default function LoginPage() {
                   <span className="inline-flex rounded-full border border-primary/40 bg-primary/15 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-primary-strong">
                     Health Score
                   </span>
-                  <h1 className="text-2xl font-bold tracking-tight text-on-surface sm:text-[1.65rem]">Acessar plataforma</h1>
+                  <h1 className="text-2xl font-bold tracking-tight text-on-surface sm:text-[1.65rem]">
+                    {mostrarHub ? 'Acesse pelo Hub Apps' : 'Acessar plataforma'}
+                  </h1>
                   <p className="text-sm leading-relaxed text-on-surface-variant">
-                    Acesso com conta Google para controle de permissões por módulo.
+                    {mostrarHub
+                      ? 'O Health Score abre dentro do Hub Apps, com entrada automática. Abra o Hub e clique no Health Score.'
+                      : 'Acesso com conta Google para controle de permissões por módulo.'}
                   </p>
                 </header>
 
+                {mostrarHub && hubErro && (
+                  <div role="alert" className="flex gap-2 rounded-xl border border-risk-critical/40 bg-risk-critical/10 px-3 py-2.5 text-sm text-risk-critical shadow-sm">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-risk-critical" aria-hidden />
+                    <span>{hubErro}</span>
+                  </div>
+                )}
+
+                {mostrarHub && (
+                  // target=_top: sai do quadro e leva a janela inteira ao Hub.
+                  <a
+                    href={hubUrl}
+                    target="_top"
+                    rel="noopener"
+                    className="group relative flex min-h-[44px] w-full items-center justify-center gap-2 overflow-hidden rounded-xl bg-primary px-4 py-3.5 text-sm font-semibold text-on-primary shadow-md transition-shadow hover:bg-secondary hover:shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                  >
+                    <ExternalLink className="h-4 w-4" aria-hidden />
+                    Abrir o Hub Apps
+                  </a>
+                )}
+
+                {!mostrarHub && (<>
                 {/* Domínio liberado nesta fase */}
                 <div className="rounded-2xl border border-primary/35 bg-primary/10 p-4 shadow-sm">
                   <div className="flex gap-3">
@@ -257,6 +311,7 @@ export default function LoginPage() {
                     Problemas para acessar?
                   </a>
                 </p>
+                </>)}
               </div>
             </motion.div>
           </motion.div>

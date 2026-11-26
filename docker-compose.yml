@@ -1,7 +1,8 @@
 # Health Score Sebratel — stack de produção (SPA estática via nginx + API de queries).
 # Deploy no Portainer: Stacks → Add stack → Repository → branch main.
 # Defina VITE_GOOGLE_CLIENT_ID (e, se quiser, QUERY_EDITOR_EMAILS) nas
-# "Environment variables" da stack.
+# "Environment variables" da stack. Para abrir dentro do Hub Apps:
+# HUB_SSO_SECRET + HUB_APP_ID (e HUB_ONLY=true para fechar o acesso direto).
 services:
   web:
     build:
@@ -60,6 +61,19 @@ services:
       POWER_USER_EMAILS: ${POWER_USER_EMAILS:-}
       # Legado: QUERY_EDITOR_EMAILS ainda conta como power_user (compat).
       QUERY_EDITOR_EMAILS: ${QUERY_EDITOR_EMAILS:-}
+      # ── Entrada pelo Hub Apps (iframe com login automático) ──
+      # HUB_SSO_SECRET = o MESMO valor do SSO_JWT_SECRET do hub-api. Segredo:
+      # só na env da stack, nunca em variável VITE_ (iria para o bundle).
+      HUB_SSO_SECRET: ${HUB_SSO_SECRET:-}
+      # Id do card do Health Score no Hub (tabela apps). SEM padrão de
+      # propósito: vazio = entrada pelo Hub desligada e HUB_ONLY ignorado.
+      HUB_APP_ID: ${HUB_APP_ID:-}
+      # true = só pelo Hub, SEM exceção (nem ADMIN_EMAILS): login pelo Google é
+      # recusado no servidor, e sessões do Google já abertas param de valer.
+      # Só vale com HUB_SSO_SECRET e HUB_APP_ID preenchidos.
+      HUB_ONLY: ${HUB_ONLY:-false}
+      # Link do botão "Abrir o Hub Apps" (só https). Padrão: produção.
+      HUB_URL: ${HUB_URL:-}
       # Papéis geridos pela tela (volume compartilhado, persiste entre deploys).
       ROLES_PATH: /app/data/roles.json
       # Config oficial (pesos + limiares) — fonte única do scoring, no volume.
