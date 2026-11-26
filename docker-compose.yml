@@ -28,7 +28,9 @@ services:
       # Porta do host (esquerda) configurável; 80 é a porta interna do nginx.
       - "${WEB_PORT:-8080}:80"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      # 127.0.0.1, não localhost: no alpine o localhost resolve para ::1 e o nginx
+      # só escuta IPv4 — o container ficava "unhealthy" com o site no ar.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -129,7 +131,7 @@ services:
       - ${DATA_DIR:-/opt/healthscore/data}:/app/data
       - snapshot:/snapshot:ro
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8787/api/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/api/health"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -149,6 +151,11 @@ services:
     networks:
       - churniq
     command: ["node", "scripts/etl-scheduler.mjs"]
+    # O ETL é um agendador, sem servidor HTTP: o HEALTHCHECK herdado do
+    # Dockerfile.api (GET :8787/api/health) nunca respondia e o deixava sempre
+    # "unhealthy". Sem checagem, o estado volta a refletir se o processo roda.
+    healthcheck:
+      disable: true
     environment:
       SNAPSHOT_OUT: /snapshot/realClients.data
       QUERY_OVERRIDES_PATH: /app/data/query-overrides.json
